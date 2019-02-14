@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
@@ -23,27 +22,43 @@ func main() {
 
 	orig := enableRawMode(fd)
 	defer disableRawMode(fd, orig)
-	go keypress()
-	if err := draw(); err != nil {
+	fatal := func(err error) {
 		disableRawMode(fd, orig)
 		log.Fatal(err)
 	}
-	time.Sleep(10 * time.Second)
-}
-
-func keypress() {
-
-}
-
-func draw() error {
-	// [y;xH moves the cursor to the appropriate position (x,y)
-	//ab += fmt.Sprintf("\x1b[%d;%dH", (E.Cy-E.RowOff)+1, (E.Cx-E.ColOff)+1)
-
-	r := bufio.NewReader(os.Stdin)
 	rows, cols, err := getWindowSize()
 	if err != nil {
-		return err
+		fatal(err)
 	}
+	t := &terminal{
+		rows:  rows,
+		cols:  cols,
+		tty:   bufio.NewReader(f),
+		stdin: os.Stdin,
+	}
+	for {
+		if err := t.draw(); err != nil {
+			fatal(err)
+		}
+		if err := t.keypress(); err != nil {
+			fatal(err)
+		}
+	}
+}
+
+type terminal struct {
+	cx, cy     int
+	rows, cols int // rows and cols available in the terminal
+	stdin      io.Reader
+	tty        *bufio.Reader
+	line       int // current line
+}
+
+func (t *terminal) draw() error {
+	// [y;xH moves the cursor to the appropriate position (x,y)
+	//ab += fmt.Sprintf("\x1b[%d;%dH", (t.cy-E.RowOff)+1, (E.Cx-E.ColOff)+1)
+
+	r := bufio.NewReader(t.stdin)
 	b := &bytes.Buffer{}
 	b.WriteString("\x1b[?25l") // hide cursor
 	b.WriteString("\x1b[H")    // move cursor to the top
@@ -64,10 +79,10 @@ func draw() error {
 			x++
 			b.WriteByte(by)
 		}
-		if y >= rows {
+		if y >= t.rows {
 			break
 		}
-		if x >= cols {
+		if x >= t.cols {
 			break
 		}
 		if err == io.EOF {
@@ -75,8 +90,137 @@ func draw() error {
 		}
 	}
 	b.WriteString("\x1b[?25h") //show cursor
-	_, err = io.Copy(os.Stdout, b)
+	_, err := io.Copy(os.Stdout, b)
 	return err
+}
+
+var errExit = errors.New("clean exit")
+
+func (t *terminal) keypress() error {
+	r, err := readKey(t.tty)
+	if err != nil {
+		return err
+	}
+	switch r {
+	case controlKey('q'):
+		return errExit
+	case ArrowDown, ArrowUp, ArrowLeft, ArrowRight:
+		t.moveCursor(r)
+	case HomeKey:
+		t.cx = 0
+	case EndKey:
+		t.cx = t.cols - 1
+	case PageUp, PageDown:
+		times := t.rows
+		for i := 0; i < times; i++ {
+			if r == PageUp {
+				t.moveCursor(ArrowUp)
+			} else {
+				t.moveCursor(ArrowDown)
+			}
+		}
+	}
+	return nil
+}
+
+func controlKey(r rune) rune {
+	return r & 0x1f
+}
+
+const (
+	ArrowLeft rune = iota + 10000
+	ArrowRight
+	ArrowDown
+	ArrowUp
+	DelKey
+	HomeKey
+	EndKey
+	PageUp
+	PageDown
+)
+
+func (t *terminal) moveCursor(key rune) {
+	switch key {
+	case ArrowLeft:
+
+	case ArrowRight:
+
+	case ArrowUp:
+
+	case ArrowDown:
+
+	}
+}
+
+func readKey(in *bufio.Reader) (rune, error) {
+	r, _, err := in.ReadRune()
+	if err != nil {
+		return 0, err
+	}
+	if r != '\x1b' {
+		return r, nil
+	}
+
+	seq := make([]byte, 2)
+	n, err := in.Read(seq)
+	if err != nil {
+		return -1, err
+	}
+	if n != 2 {
+		return -1, errors.New("could not read sequence")
+	}
+
+	if seq[0] == '[' {
+		if seq[1] >= '0' && seq[1] <= '9' {
+			r, _, err = in.ReadRune()
+			if err != nil {
+				return '\x1b', err
+			}
+			if r != '~' {
+				return '\x1b', err
+			}
+			switch seq[1] {
+			case '1':
+				return HomeKey, nil
+			case '3':
+				return DelKey, nil
+			case '4':
+				return EndKey, nil
+			case '5':
+				return PageUp, nil
+			case '6':
+				return PageDown, nil
+			case '7':
+				return HomeKey, nil
+			case '8':
+				return EndKey, nil
+			}
+		} else {
+			switch seq[1] {
+			case 'A':
+				return ArrowUp, nil
+			case 'B':
+				return ArrowDown, nil
+			case 'C':
+				return ArrowRight, nil
+			case 'D':
+				return ArrowLeft, nil
+			case 'H':
+				return HomeKey, nil
+			case 'F':
+				return EndKey, nil
+			}
+		}
+	} else if seq[0] == 'O' {
+		switch seq[1] {
+		case 'H':
+			return HomeKey, nil
+		case 'F':
+			return EndKey, nil
+		}
+	}
+
+	return '\x1b', nil
 }
 
 func enableRawMode(fd uintptr) *syscall.Termios {
