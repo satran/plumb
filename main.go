@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -31,15 +32,12 @@ func main() {
 		fatal(err)
 	}
 	t := &terminal{
-		rows:  rows,
-		cols:  cols,
-		tty:   bufio.NewReader(f),
-		stdin: os.Stdin,
+		rows: rows,
+		cols: cols,
+		tty:  bufio.NewReader(f),
 	}
+	go t.read(os.Stdin)
 	for {
-		if err := t.draw(); err != nil {
-			fatal(err)
-		}
 		if err := t.keypress(); err != nil {
 			fatal(err)
 		}
@@ -49,49 +47,78 @@ func main() {
 type terminal struct {
 	cx, cy     int
 	rows, cols int // rows and cols available in the terminal
-	stdin      io.Reader
+	stdin      [][]byte
 	tty        *bufio.Reader
-	line       int // current line
+	selline    int // current line
+	topline    int
 }
 
+func (t *terminal) read(stdin io.Reader) {
+	b := bufio.NewReader(stdin)
+	for {
+		// I don't support very long lines now
+		line, _, err := b.ReadLine()
+		if err != nil && err != io.EOF {
+			panic(err)
+		}
+		if len(line) > 0 {
+			t.stdin = append(t.stdin, line)
+		}
+		if err == io.EOF {
+			time.Sleep(1 * time.Microsecond)
+			continue
+		}
+		if err := t.draw(); err != nil {
+			panic(err)
+		}
+	}
+}
+
+var tabs = []byte{' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '}
+
 func (t *terminal) draw() error {
-	// [y;xH moves the cursor to the appropriate position (x,y)
+	// [y;xHa moves the cursor to the appropriate position (x,y)
 	//ab += fmt.Sprintf("\x1b[%d;%dH", (t.cy-E.RowOff)+1, (E.Cx-E.ColOff)+1)
 
-	r := bufio.NewReader(t.stdin)
 	b := &bytes.Buffer{}
 	b.WriteString("\x1b[?25l") // hide cursor
 	b.WriteString("\x1b[H")    // move cursor to the top
-	b.WriteString("\x1b[K")    // clear line before printing
-	x, y := 0, 0
-	for {
-		by, err := r.ReadByte()
-		if err != nil && err != io.EOF {
-			return err
+	for y := t.topline; y < t.rows+t.topline; y++ {
+		b.WriteString(fmt.Sprintf("\x1b[%d;%dH", y+1, 1))
+		b.WriteString("\x1b[K") // clear line before printing
+		if t.isSelected(y) {
+			b.WriteString("\x1b[7m") // highlight selected line
 		}
-		switch by {
-		case '\n':
-			b.WriteString("\r\n")   // the terminal takes this as a new line and repositions the cursor
-			b.WriteString("\x1b[K") // clear line before printing
-			x = 0
-			y++
-		default:
-			x++
-			b.WriteByte(by)
-		}
-		if y >= t.rows {
+		if y >= t.rows+t.topline || y >= len(t.stdin) {
 			break
 		}
-		if x >= t.cols {
-			break
+		line := t.stdin[y]
+		line = bytes.Replace(line, []byte{'\t'}, tabs, -1)
+		end := t.cols
+		if end > len(line) {
+			end = len(line)
 		}
-		if err == io.EOF {
-			break
+		b.Write(line[:end])
+		if end < t.cols {
+			for i := end; i < t.cols; i++ {
+				b.WriteString(" ")
+			}
+		}
+		b.WriteString("\n\r")
+		if t.isSelected(y) {
+			b.WriteString("\x1b[m") // unhighlight selected line
 		}
 	}
 	b.WriteString("\x1b[?25h") //show cursor
 	_, err := io.Copy(os.Stdout, b)
 	return err
+}
+
+func (t *terminal) isSelected(line int) bool {
+	if line == t.selline {
+		return true
+	}
+	return false
 }
 
 var errExit = errors.New("clean exit")
@@ -120,6 +147,7 @@ func (t *terminal) keypress() error {
 			}
 		}
 	}
+	t.draw()
 	return nil
 }
 
@@ -146,9 +174,19 @@ func (t *terminal) moveCursor(key rune) {
 	case ArrowRight:
 
 	case ArrowUp:
-
+		if t.selline > 0 {
+			t.selline--
+		}
+		if t.selline-t.topline <= t.rows && t.topline > 0 {
+			t.topline--
+		}
 	case ArrowDown:
-
+		if t.selline <= len(t.stdin) {
+			t.selline++
+		}
+		if t.selline-t.topline > t.rows && t.selline < len(t.stdin)-1 {
+			t.topline++
+		}
 	}
 }
 
