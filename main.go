@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
@@ -32,9 +31,10 @@ func main() {
 		fatal(err)
 	}
 	t := &terminal{
-		rows: rows,
-		cols: cols,
-		tty:  bufio.NewReader(f),
+		rows:  rows,
+		cols:  cols,
+		tty:   bufio.NewReader(f),
+		stdin: &lineReader{lines: make([][]byte, 0, rows)},
 	}
 	go t.read(os.Stdin)
 	for {
@@ -44,28 +44,52 @@ func main() {
 	}
 }
 
+type lineReader struct {
+	lines [][]byte
+}
+
+func (l *lineReader) Write(p []byte) (int, error) {
+	if len(l.lines) == 0 {
+		l.lines = append(l.lines, []byte{})
+	}
+	for _, b := range p {
+		if b == '\n' {
+			l.lines = append(l.lines, []byte{})
+			continue
+		}
+		last := len(l.lines) - 1
+		l.lines[last] = append(l.lines[last], b)
+	}
+	return len(p), nil
+}
+
+func (l *lineReader) Line(i int) ([]byte, error) {
+	if i >= len(l.lines) {
+		return nil, errors.New("line not found")
+	}
+	return l.lines[i], nil
+}
+
+func (l *lineReader) Rows() int {
+	return len(l.lines)
+}
+
 type terminal struct {
 	cx, cy     int
 	rows, cols int // rows and cols available in the terminal
-	stdin      [][]byte
+	stdin      *lineReader
 	tty        *bufio.Reader
 	selline    int // current line
 	topline    int
 }
 
 func (t *terminal) read(stdin io.Reader) {
-	b := bufio.NewReader(stdin)
 	for {
-		// I don't support very long lines now
-		line, _, err := b.ReadLine()
-		if err != nil && err != io.EOF {
+		n, err := io.Copy(t.stdin, stdin)
+		if err != nil {
 			panic(err)
 		}
-		if len(line) > 0 {
-			t.stdin = append(t.stdin, line)
-		}
-		if err == io.EOF {
-			time.Sleep(1 * time.Microsecond)
+		if n == 0 {
 			continue
 		}
 		if err := t.draw(); err != nil {
@@ -89,10 +113,13 @@ func (t *terminal) draw() error {
 		if t.isSelected(y) {
 			b.WriteString("\x1b[7m") // highlight selected line
 		}
-		if y >= t.rows+t.topline || y >= len(t.stdin) {
+		if y >= t.rows+t.topline || y >= t.stdin.Rows() {
 			break
 		}
-		line := t.stdin[y]
+		line, err := t.stdin.Line(y)
+		if err != nil {
+			panic(err)
+		}
 		line = bytes.Replace(line, []byte{'\t'}, tabs, -1)
 		end := t.cols
 		if end > len(line) {
@@ -181,10 +208,10 @@ func (t *terminal) moveCursor(key rune) {
 			t.topline--
 		}
 	case ArrowDown:
-		if t.selline <= len(t.stdin) {
+		if t.selline <= t.stdin.Rows() {
 			t.selline++
 		}
-		if t.selline-t.topline > t.rows && t.selline < len(t.stdin)-1 {
+		if t.selline-t.topline > t.rows && t.selline < t.stdin.Rows()-1 {
 			t.topline++
 		}
 	}
