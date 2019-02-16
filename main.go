@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -13,7 +14,20 @@ import (
 	"unsafe"
 )
 
+var debug func(format string, v ...interface{})
+
 func main() {
+	d := flag.Bool("debug", false, "write debug logs to debug.log")
+	flag.Parse()
+	if *d {
+		debugFile, err := os.OpenFile("debug.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.ModePerm)
+		if err != nil {
+			log.Fatal(err)
+		}
+		debug = log.New(debugFile, "", log.Lshortfile).Printf
+	} else {
+		debug = func(format string, v ...interface{}) {}
+	}
 	f, err := os.OpenFile("/dev/tty", os.O_RDWR, os.ModePerm)
 	if err != nil {
 		panic(err)
@@ -115,7 +129,7 @@ func (t *terminal) draw() error {
 	b := &bytes.Buffer{}
 	b.WriteString("\x1b[?25l") // hide cursor
 	b.WriteString("\x1b[H")    // move cursor to the top
-	for y := t.topline; y < t.rows+t.topline; y++ {
+	for y := t.topline; y < t.rows+t.topline-1; y++ {
 		b.WriteString(fmt.Sprintf("\x1b[%d;%dH", y+1, 1))
 		b.WriteString("\x1b[K") // clear line before printing
 		if t.isSelected(y) {
@@ -212,14 +226,14 @@ func (t *terminal) moveCursor(key rune) {
 		if t.selline > 0 {
 			t.selline--
 		}
-		if t.selline-t.topline <= t.rows && t.topline > 0 {
+		if t.selline-t.topline <= 1 && t.topline > 0 {
 			t.topline--
 		}
 	case ArrowDown:
-		if t.selline <= t.stdin.Rows() {
+		if t.selline < t.stdin.Rows() {
 			t.selline++
 		}
-		if t.selline-t.topline > t.rows && t.selline < t.stdin.Rows()-1 {
+		if t.selline-t.topline > t.rows-2 {
 			t.topline++
 		}
 	}
