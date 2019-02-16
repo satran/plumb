@@ -127,6 +127,7 @@ func (t *terminal) draw() error {
 	//ab += fmt.Sprintf("\x1b[%d;%dH", (t.cy-E.RowOff)+1, (E.Cx-E.ColOff)+1)
 
 	b := &bytes.Buffer{}
+	b.WriteString("\x1b[2J")   // clear screen
 	b.WriteString("\x1b[?25l") // hide cursor
 	b.WriteString("\x1b[H")    // move cursor to the top
 	for y := t.topline; y < t.rows+t.topline-1; y++ {
