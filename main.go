@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -45,10 +46,13 @@ func main() {
 }
 
 type lineReader struct {
+	sync.Mutex
 	lines [][]byte
 }
 
 func (l *lineReader) Write(p []byte) (int, error) {
+	l.Lock()
+	defer l.Unlock()
 	if len(l.lines) == 0 {
 		l.lines = append(l.lines, []byte{})
 	}
@@ -64,6 +68,8 @@ func (l *lineReader) Write(p []byte) (int, error) {
 }
 
 func (l *lineReader) Line(i int) ([]byte, error) {
+	l.Lock()
+	defer l.Unlock()
 	if i >= len(l.lines) {
 		return nil, errors.New("line not found")
 	}
@@ -71,6 +77,8 @@ func (l *lineReader) Line(i int) ([]byte, error) {
 }
 
 func (l *lineReader) Rows() int {
+	l.Lock()
+	defer l.Unlock()
 	return len(l.lines)
 }
 
