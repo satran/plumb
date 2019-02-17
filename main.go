@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -46,15 +48,22 @@ func main() {
 		fatal(err)
 	}
 	t := &terminal{
-		rows:  rows,
-		cols:  cols,
-		tty:   bufio.NewReader(f),
-		stdin: &lineReader{lines: make([][]byte, 0, rows)},
+		rows:   rows,
+		cols:   cols,
+		tty:    bufio.NewReader(f),
+		stdin:  &lineReader{lines: make([][]byte, 0, rows)},
+		editor: os.Getenv("EDITOR"),
+	}
+	if t.editor == "" {
+		t.editor = "emacs"
 	}
 	go t.read(os.Stdin)
 	for {
 		if err := t.keypress(); err != nil {
-			fatal(err)
+			if err != errExit {
+				fatal(err)
+			}
+			return
 		}
 	}
 }
@@ -103,6 +112,7 @@ type terminal struct {
 	tty        *bufio.Reader
 	selline    int // current line
 	topline    int
+	editor     string
 }
 
 func (t *terminal) read(stdin io.Reader) {
@@ -196,8 +206,46 @@ func (t *terminal) keypress() error {
 				t.moveCursor(ArrowDown)
 			}
 		}
+	case EnterKey:
+		return t.exec()
 	}
 	t.draw()
+	return nil
+}
+
+func (t *terminal) exec() error {
+	line, _ := t.stdin.Line(t.selline)
+	chunks := strings.Split(string(line), " ")
+	for _, name := range chunks {
+		filechunks := strings.Split(name, ":")
+		debug("%#v", filechunks)
+		if _, err := os.Stat(filechunks[0]); os.IsNotExist(err) {
+			continue
+		}
+		args := []string{}
+		if len(filechunks) > 1 {
+			args = append(args, "+"+filechunks[1], filechunks[0])
+		} else {
+			args = append(args, filechunks[0])
+		}
+		debug("args: %#v", args)
+
+		cmd := exec.Command(t.editor, args...)
+		tty, _ := os.OpenFile("/dev/tty", os.O_WRONLY, os.ModePerm)
+		defer tty.Close()
+		stdout, err := syscall.Dup(int(os.Stdout.Fd()))
+		if err != nil {
+			return err
+		}
+		f := os.NewFile(uintptr(stdout), "stdout")
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		cmd.Stdin = tty
+		cmd.Stdout = f
+		return cmd.Run()
+	}
 	return nil
 }
 
@@ -215,6 +263,7 @@ const (
 	EndKey
 	PageUp
 	PageDown
+	EnterKey
 )
 
 func (t *terminal) moveCursor(key rune) {
@@ -244,6 +293,9 @@ func readKey(in *bufio.Reader) (rune, error) {
 	r, _, err := in.ReadRune()
 	if err != nil {
 		return 0, err
+	}
+	if r == '\r' {
+		return EnterKey, nil
 	}
 	if r != '\x1b' {
 		return r, nil
